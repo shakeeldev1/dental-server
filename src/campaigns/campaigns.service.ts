@@ -26,7 +26,7 @@ export class CampaignsService {
   ) {}
 
   /** Resolve the patient audience for a campaign (spec §21). */
-  private async resolveAudience(type: AudienceType): Promise<PatientRow[]> {
+  private async resolveAudience(type: Exclude<AudienceType, 'csv'>): Promise<PatientRow[]> {
     const db = this.supabase.getClient();
     const { data: patients, error } = await db
       .from('patients')
@@ -49,11 +49,17 @@ export class CampaignsService {
   }
 
   async audienceCount(type: AudienceType): Promise<{ count: number }> {
+    if (type === 'csv') return { count: 0 };
     return { count: (await this.resolveAudience(type)).length };
   }
 
   async create(dto: CreateCampaignDto, userId: string | null) {
     const db = this.supabase.getClient();
+    const recipients = dto.audience_type === 'csv' ? (dto.recipients ?? []) : [];
+    if (dto.audience_type === 'csv' && recipients.length === 0) {
+      throw new BadRequestException('Upload at least one contact for a CSV campaign');
+    }
+
     const { data, error } = await db
       .from('campaigns')
       .insert({
@@ -62,11 +68,25 @@ export class CampaignsService {
         message: dto.message,
         audience_type: dto.audience_type,
         status: 'draft',
+        total_recipients: recipients.length,
         created_by: userId,
       })
       .select()
       .single();
     if (error) throw new Error(error.message);
+
+    if (dto.audience_type === 'csv') {
+      const rows = recipients.map((r) => ({
+        campaign_id: data.id as string,
+        patient_id: null,
+        name: r.name ?? null,
+        phone: r.phone,
+        status: 'pending' as const,
+      }));
+      const { error: insErr } = await db.from('campaign_recipients').insert(rows);
+      if (insErr) throw new Error(insErr.message);
+    }
+
     return data;
   }
 
@@ -83,7 +103,29 @@ export class CampaignsService {
       throw new BadRequestException('Campaign is already sending');
     }
 
-    const audience = await this.resolveAudience(campaign.audience_type as AudienceType);
+    const audienceType = campaign.audience_type as AudienceType;
+
+    // CSV campaigns already have their recipients materialized at creation time.
+    if (audienceType === 'csv') {
+      const { count } = await db
+        .from('campaign_recipients')
+        .select('id', { count: 'exact', head: true })
+        .eq('campaign_id', campaignId);
+      if (!count) throw new BadRequestException('Audience is empty');
+
+      await db
+        .from('campaigns')
+        .update({ status: 'sending', total_recipients: count })
+        .eq('id', campaignId);
+
+      void this.processCampaign(campaignId, userId).catch((e) =>
+        this.logger.error(`Campaign ${campaignId} processing failed: ${e}`),
+      );
+
+      return { status: 'sending', total: count };
+    }
+
+    const audience = await this.resolveAudience(audienceType);
     if (audience.length === 0) throw new BadRequestException('Audience is empty');
 
     // Build recipients only on the first send; a re-send resumes pending ones
