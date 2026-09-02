@@ -43,4 +43,16 @@ export class UsersService {
 
     return profile;
   }
+
+  /**
+   * Permanently deletes a staff account from Supabase Auth. The FK from
+   * public.users to auth.users is `on delete cascade`, so the profile row
+   * is removed automatically.
+   */
+  async remove(id: string) {
+    const admin = this.supabase.getClient();
+    const { error } = await admin.auth.admin.deleteUser(id);
+    if (error) throw new BadRequestException(error.message);
+    return { id };
+  }
 }
