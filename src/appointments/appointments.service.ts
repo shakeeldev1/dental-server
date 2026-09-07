@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, Logger, NotFoundException } from '@nes
 import { SupabaseService } from '../supabase/supabase.service';
 import { TemplatesService, type LanguageCode } from '../templates/templates.service';
 import { MessagesService } from '../whatsapp/messages.service';
-import { formatClinicDate, formatClinicTime, clinicToday } from '../common/clinic-time';
+import { formatClinicDate, formatClinicTime, clinicToday, addDays } from '../common/clinic-time';
 import type { CompleteAppointmentDto } from './dto/complete-appointment.dto';
 
 export interface ConfirmResult {
@@ -14,6 +14,13 @@ export interface ConfirmResult {
 export interface CompleteResult {
   ok: boolean;
   review: { ok: boolean; alreadySent: boolean; error: string | null };
+}
+
+export interface NoShowResult {
+  ok: boolean;
+  alreadyMarked: boolean;
+  whatsapp: { ok: boolean; error: string | null };
+  followUpCreated: boolean;
 }
 
 interface AppointmentRow {
@@ -62,7 +69,7 @@ export class AppointmentsService {
     const appt = data as unknown as AppointmentRow;
 
     if (appt.confirmation_sent) return { ok: true, alreadySent: true, error: null };
-    if (!['pending', 'confirmed'].includes(appt.status)) {
+    if (!['requested', 'confirmed'].includes(appt.status)) {
       return { ok: false, alreadySent: false, error: `Cannot confirm a ${appt.status} appointment` };
     }
     if (!appt.patients) throw new NotFoundException('Patient not found for appointment');
@@ -175,11 +182,89 @@ export class AppointmentsService {
     });
 
     if (outcome.ok) {
-      await db.from('appointments').update({ review_sent: true }).eq('id', appt.id);
+      await db
+        .from('appointments')
+        .update({ review_sent: true, review_sent_at: new Date().toISOString() })
+        .eq('id', appt.id);
     } else {
       this.logger.warn(`Review not sent for ${appt.id}: ${outcome.error}`);
     }
 
     return { ok: true, review: { ok: outcome.ok, alreadySent: false, error: outcome.error } };
+  }
+
+  /**
+   * Marks an appointment as No Show, sends a WhatsApp follow-up, and creates a
+   * reception follow-up task. Idempotent on appointment status (re-calling
+   * after it's already no_show just re-confirms, without re-sending/re-creating).
+   */
+  async markNoShow(appointmentId: string, userId: string | null): Promise<NoShowResult> {
+    const db = this.supabase.getClient();
+
+    const { data, error } = await db
+      .from('appointments')
+      .select(
+        'id, patient_id, scheduled_at, doctor_name, treatment, status, ' +
+          'patients(full_name, phone, preferred_language)',
+      )
+      .eq('id', appointmentId)
+      .single();
+
+    if (error || !data) throw new NotFoundException('Appointment not found');
+    const appt = data as unknown as AppointmentRow;
+    if (!appt.patients) throw new NotFoundException('Patient not found for appointment');
+
+    if (appt.status === 'no_show') {
+      return { ok: true, alreadyMarked: true, whatsapp: { ok: true, error: null }, followUpCreated: false };
+    }
+    if (appt.status === 'completed') {
+      throw new BadRequestException('Cannot mark a completed appointment as No Show');
+    }
+
+    await db.from('appointments').update({ status: 'no_show' }).eq('id', appt.id);
+
+    const settings = await this.templates.getSettings();
+    const language: LanguageCode = appt.patients.preferred_language ?? settings.default_language;
+    const tz = settings.clinic_timezone;
+
+    const body = await this.templates.render('no_show_followup', language, {
+      patient_name: appt.patients.full_name,
+      clinic_name: settings.clinic_name,
+      appointment_date: formatClinicDate(appt.scheduled_at, tz),
+      appointment_time: formatClinicTime(appt.scheduled_at, tz),
+      doctor_name: appt.doctor_name ?? '',
+      treatment: appt.treatment ?? '',
+    });
+
+    const outcome = await this.messages.send({
+      phone: appt.patients.phone,
+      patientId: appt.patient_id,
+      appointmentId: appt.id,
+      type: 'no_show_followup',
+      body,
+      createdBy: userId,
+    });
+    if (!outcome.ok) {
+      this.logger.warn(`No-show follow-up not sent for ${appt.id}: ${outcome.error}`);
+    }
+
+    const { error: followUpErr } = await db.from('follow_ups').insert({
+      patient_id: appt.patient_id,
+      task: `Follow up with ${appt.patients.full_name} — marked No Show`,
+      due_date: addDays(clinicToday(tz), 1),
+      priority: 'medium',
+      status: 'pending',
+      created_by: userId,
+    });
+    if (followUpErr) {
+      this.logger.error(`Follow-up creation failed for ${appt.id}: ${followUpErr.message}`);
+    }
+
+    return {
+      ok: true,
+      alreadyMarked: false,
+      whatsapp: { ok: outcome.ok, error: outcome.error },
+      followUpCreated: !followUpErr,
+    };
   }
 }

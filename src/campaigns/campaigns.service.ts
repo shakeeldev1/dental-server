@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, Logger, NotFoundException } from '@nes
 import { SupabaseService } from '../supabase/supabase.service';
 import { TemplatesService, type LanguageCode } from '../templates/templates.service';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
-import type { AudienceType, CreateCampaignDto } from './dto/create-campaign.dto';
+import type { AudienceType, CreateCampaignDto, SegmentFilters } from './dto/create-campaign.dto';
 
 const RECENT_DAYS = 90;
 const SEND_DELAY_MS = 1100; // ~55/min, under the provider's 60/min limit
@@ -26,8 +26,34 @@ export class CampaignsService {
   ) {}
 
   /** Resolve the patient audience for a campaign (spec §21). */
-  private async resolveAudience(type: Exclude<AudienceType, 'csv'>): Promise<PatientRow[]> {
+  private async resolveAudience(
+    type: Exclude<AudienceType, 'csv'>,
+    filters?: SegmentFilters,
+  ): Promise<PatientRow[]> {
     const db = this.supabase.getClient();
+
+    if (type === 'segment') {
+      let query = db.from('patient_segment_view').select('id, full_name, phone, preferred_language');
+      const f = filters ?? {};
+      if (f.doctor_id) query = query.eq('preferred_doctor_id', f.doctor_id);
+      if (f.service_id) query = query.eq('preferred_service_id', f.service_id);
+      if (f.lead_source?.length) query = query.in('lead_source', f.lead_source);
+      if (f.customer_type) query = query.eq('customer_type', f.customer_type);
+      if (f.customer_status?.length) query = query.in('customer_status', f.customer_status);
+      if (f.last_appointment_status?.length) query = query.in('last_appointment_status', f.last_appointment_status);
+      if (typeof f.has_no_show === 'boolean') query = query.eq('has_no_show', f.has_no_show);
+      if (typeof f.has_completed === 'boolean') query = query.eq('has_completed', f.has_completed);
+      if (typeof f.review_requested === 'boolean') query = query.eq('review_requested', f.review_requested);
+      if (f.created_after) query = query.gte('created_at', f.created_after);
+      if (f.created_before) query = query.lte('created_at', f.created_before);
+      if (f.last_contact_after) query = query.gte('last_contact_at', f.last_contact_after);
+      if (f.last_contact_before) query = query.lte('last_contact_at', f.last_contact_before);
+
+      const { data, error } = await query;
+      if (error) throw new Error(error.message);
+      return (data ?? []) as PatientRow[];
+    }
+
     const { data: patients, error } = await db
       .from('patients')
       .select('id, full_name, phone, preferred_language');
@@ -48,9 +74,9 @@ export class CampaignsService {
       : all.filter((p) => !recentIds.has(p.id));
   }
 
-  async audienceCount(type: AudienceType): Promise<{ count: number }> {
+  async audienceCount(type: AudienceType, filters?: SegmentFilters): Promise<{ count: number }> {
     if (type === 'csv') return { count: 0 };
-    return { count: (await this.resolveAudience(type)).length };
+    return { count: (await this.resolveAudience(type, filters)).length };
   }
 
   async create(dto: CreateCampaignDto, userId: string | null) {
@@ -67,6 +93,7 @@ export class CampaignsService {
         offer: dto.offer ?? null,
         message: dto.message,
         audience_type: dto.audience_type,
+        segment_filters: dto.audience_type === 'segment' ? (dto.segment_filters ?? {}) : null,
         status: 'draft',
         total_recipients: recipients.length,
         created_by: userId,
@@ -125,7 +152,10 @@ export class CampaignsService {
       return { status: 'sending', total: count };
     }
 
-    const audience = await this.resolveAudience(audienceType);
+    const audience = await this.resolveAudience(
+      audienceType,
+      audienceType === 'segment' ? ((campaign.segment_filters as SegmentFilters) ?? undefined) : undefined,
+    );
     if (audience.length === 0) throw new BadRequestException('Audience is empty');
 
     // Build recipients only on the first send; a re-send resumes pending ones

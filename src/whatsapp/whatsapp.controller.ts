@@ -16,6 +16,8 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { WhatsappService } from './whatsapp.service';
 import { MessagesService } from './messages.service';
 import { SendMessageDto } from './dto/send-message.dto';
+import { SendReviewDto } from './dto/send-review.dto';
+import { TemplatesService, type LanguageCode } from '../templates/templates.service';
 
 @Controller('whatsapp')
 export class WhatsappController {
@@ -26,6 +28,7 @@ export class WhatsappController {
     private readonly messages: MessagesService,
     private readonly supabase: SupabaseService,
     private readonly config: ConfigService,
+    private readonly templates: TemplatesService,
   ) {}
 
   /** Provider connection status. GET /api/whatsapp/status */
@@ -60,6 +63,39 @@ export class WhatsappController {
       patientId,
       type: 'manual',
       body: dto.message,
+      createdBy: user.id,
+    });
+  }
+
+  /**
+   * Send a review request to a patient directly from their profile, independent
+   * of appointment completion. Reuses the same render+send path as
+   * AppointmentsService.complete(). POST /api/whatsapp/send-review
+   */
+  @UseGuards(SupabaseAuthGuard)
+  @Post('send-review')
+  async sendReview(@Body() dto: SendReviewDto, @CurrentUser() user: AuthUser) {
+    const { data: patient, error } = await this.supabase
+      .getClient()
+      .from('patients')
+      .select('full_name, phone, preferred_language')
+      .eq('id', dto.patientId)
+      .single();
+    if (error || !patient) throw new BadRequestException('Patient not found');
+
+    const settings = await this.templates.getSettings();
+    const language: LanguageCode = patient.preferred_language ?? settings.default_language;
+    const body = await this.templates.render('review_request', language, {
+      patient_name: patient.full_name,
+      clinic_name: settings.clinic_name,
+      google_review_url: settings.google_review_url ?? '',
+    });
+
+    return this.messages.send({
+      phone: patient.phone,
+      patientId: dto.patientId,
+      type: 'review',
+      body,
       createdBy: user.id,
     });
   }

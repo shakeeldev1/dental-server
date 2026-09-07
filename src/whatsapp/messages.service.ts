@@ -9,7 +9,8 @@ export type MessageType =
   | 'review'
   | 'treatment_reminder'
   | 'campaign'
-  | 'manual';
+  | 'manual'
+  | 'no_show_followup';
 
 export interface SendParams {
   phone: string;

@@ -7,7 +7,8 @@ export type TemplateKey =
   | 'reminder_2h'
   | 'review_request'
   | 'treatment_reminder'
-  | 'campaign';
+  | 'campaign'
+  | 'no_show_followup';
 
 export type LanguageCode = 'en' | 'ar';
 
@@ -18,6 +19,8 @@ export interface ClinicSettings {
   default_language: LanguageCode;
   reminder_24h_enabled: boolean;
   reminder_2h_enabled: boolean;
+  reminder_1_hours_before: number;
+  reminder_2_hours_before: number;
   treatment_reminder_enabled: boolean;
   treatment_reminder_days: number;
 }

@@ -25,4 +25,11 @@ export class AppointmentsController {
   ) {
     return this.appointments.complete(id, dto, user.id);
   }
+
+  /** Mark No Show: WhatsApp follow-up + reception follow-up task. POST /api/appointments/:id/no-show */
+  @UseGuards(SupabaseAuthGuard)
+  @Post(':id/no-show')
+  noShow(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser) {
+    return this.appointments.markNoShow(id, user.id);
+  }
 }

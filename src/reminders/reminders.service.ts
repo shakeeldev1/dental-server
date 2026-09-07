@@ -120,9 +120,11 @@ export class RemindersService {
       return { kind: '24h', matched: 0, sent: 0, failed: 0, skipped: 'disabled' };
     }
     const now = Date.now();
-    // Window: more than 2h away (2h job handles the rest) and within 24h.
-    const from = new Date(now + 2 * HOUR).toISOString();
-    const to = new Date(now + 24 * HOUR).toISOString();
+    // Window: more than reminder_2_hours_before away (the 2h job handles the
+    // rest) and within reminder_1_hours_before. Both thresholds are
+    // admin-configurable in Settings, not hardcoded.
+    const from = new Date(now + settings.reminder_2_hours_before * HOUR).toISOString();
+    const to = new Date(now + settings.reminder_1_hours_before * HOUR).toISOString();
     return this.process('24h', 'reminder_24h', 'reminder_24h_sent', from, to, dryRun, settings.clinic_timezone, settings.clinic_name, settings.default_language);
   }
 
@@ -132,9 +134,9 @@ export class RemindersService {
       return { kind: '2h', matched: 0, sent: 0, failed: 0, skipped: 'disabled' };
     }
     const now = Date.now();
-    // Window: from now up to 2h away.
+    // Window: from now up to reminder_2_hours_before away.
     const from = new Date(now).toISOString();
-    const to = new Date(now + 2 * HOUR).toISOString();
+    const to = new Date(now + settings.reminder_2_hours_before * HOUR).toISOString();
     return this.process('2h', 'reminder_2h', 'reminder_2h_sent', from, to, dryRun, settings.clinic_timezone, settings.clinic_name, settings.default_language);
   }
 
@@ -153,7 +155,7 @@ export class RemindersService {
     const { data, error } = await db
       .from('appointments')
       .select('id, patient_id, scheduled_at, doctor_name, treatment, patients(full_name, phone, preferred_language)')
-      .in('status', ['pending', 'confirmed'])
+      .in('status', ['requested', 'confirmed'])
       .eq(flagColumn, false)
       .gt('scheduled_at', fromISO)
       .lte('scheduled_at', toISO);

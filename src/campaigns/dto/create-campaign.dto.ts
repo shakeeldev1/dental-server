@@ -3,6 +3,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsIn,
+  IsObject,
   IsOptional,
   IsString,
   MaxLength,
@@ -11,7 +12,24 @@ import {
   ValidateNested,
 } from 'class-validator';
 
-export type AudienceType = 'all' | 'recent' | 'inactive' | 'csv';
+export type AudienceType = 'all' | 'recent' | 'inactive' | 'csv' | 'segment';
+
+/** All fields optional; every present key is applied as an additional filter. */
+export interface SegmentFilters {
+  doctor_id?: string;
+  service_id?: string;
+  lead_source?: string[];
+  customer_type?: 'individual' | 'family';
+  customer_status?: string[];
+  last_appointment_status?: string[];
+  has_no_show?: boolean;
+  has_completed?: boolean;
+  review_requested?: boolean;
+  created_after?: string;
+  created_before?: string;
+  last_contact_after?: string;
+  last_contact_before?: string;
+}
 
 export class CampaignRecipientDto {
   @IsOptional()
@@ -41,7 +59,7 @@ export class CreateCampaignDto {
   @MaxLength(4096)
   message!: string;
 
-  @IsIn(['all', 'recent', 'inactive', 'csv'])
+  @IsIn(['all', 'recent', 'inactive', 'csv', 'segment'])
   audience_type!: AudienceType;
 
   /** Uploaded contact list; required when audience_type is 'csv'. */
@@ -51,4 +69,9 @@ export class CreateCampaignDto {
   @ValidateNested({ each: true })
   @Type(() => CampaignRecipientDto)
   recipients?: CampaignRecipientDto[];
+
+  /** Filter criteria; only used (and stored) when audience_type is 'segment'. */
+  @ValidateIf((o: CreateCampaignDto) => o.audience_type === 'segment')
+  @IsObject()
+  segment_filters?: SegmentFilters;
 }
