@@ -20,6 +20,8 @@ export interface SendParams {
   appointmentId?: string | null;
   campaignId?: string | null;
   createdBy?: string | null;
+  /** Publicly reachable image URL; when set, sends an image with `body` as its caption instead of a text message. */
+  imageUrl?: string | null;
 }
 
 export interface SendOutcome {
@@ -66,7 +68,9 @@ export class MessagesService {
       throw new Error(insertErr?.message ?? 'Could not create message log');
     }
 
-    const result = await this.wa.sendText(params.phone, params.body);
+    const result = params.imageUrl
+      ? await this.wa.sendMedia(params.phone, 'image', params.imageUrl, params.body)
+      : await this.wa.sendText(params.phone, params.body);
 
     const { error: updateErr } = await db
       .from('whatsapp_messages')

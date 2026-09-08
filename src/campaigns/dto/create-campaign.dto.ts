@@ -3,10 +3,14 @@ import {
   ArrayMinSize,
   IsArray,
   IsIn,
+  IsInt,
   IsObject,
   IsOptional,
   IsString,
+  IsUrl,
+  Max,
   MaxLength,
+  Min,
   MinLength,
   ValidateIf,
   ValidateNested,
@@ -74,4 +78,23 @@ export class CreateCampaignDto {
   @ValidateIf((o: CreateCampaignDto) => o.audience_type === 'segment')
   @IsObject()
   segment_filters?: SegmentFilters;
+
+  /** Public URL of an uploaded campaign image (spec: image + message via WGL). */
+  @IsOptional()
+  @IsUrl({ require_protocol: true })
+  image_url?: string;
+
+  /** Per-campaign override of settings.campaign_daily_limit. */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100000)
+  daily_limit?: number;
+
+  /** Per-campaign override of settings.campaign_send_interval_seconds. */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(86400)
+  send_interval_seconds?: number;
 }

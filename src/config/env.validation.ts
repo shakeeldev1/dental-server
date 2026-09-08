@@ -21,6 +21,11 @@ export const envValidationSchema = Joi.object({
   WHATSAPP_SENDER: Joi.string().allow('').optional(),
   WHATSAPP_WEBHOOK_SECRET: Joi.string().allow('').optional(),
 
+  CLOUDINARY_CLOUD_NAME: Joi.string().allow('').optional(),
+  CLOUDINARY_API_KEY: Joi.string().allow('').optional(),
+  CLOUDINARY_API_SECRET: Joi.string().allow('').optional(),
+  CLOUDINARY_UPLOAD_FOLDER: Joi.string().allow('').optional(),
+
   CLINIC_NAME: Joi.string().allow('').optional(),
   GOOGLE_REVIEW_URL: Joi.string().allow('').optional(),
 });

@@ -23,6 +23,8 @@ export interface ClinicSettings {
   reminder_2_hours_before: number;
   treatment_reminder_enabled: boolean;
   treatment_reminder_days: number;
+  campaign_daily_limit: number;
+  campaign_send_interval_seconds: number;
 }
 
 /**

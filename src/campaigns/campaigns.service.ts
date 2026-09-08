@@ -1,12 +1,9 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { TemplatesService, type LanguageCode } from '../templates/templates.service';
-import { WhatsappService } from '../whatsapp/whatsapp.service';
 import type { AudienceType, CreateCampaignDto, SegmentFilters } from './dto/create-campaign.dto';
 
 const RECENT_DAYS = 90;
-const SEND_DELAY_MS = 1100; // ~55/min, under the provider's 60/min limit
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface PatientRow {
   id: string;
@@ -15,14 +12,18 @@ interface PatientRow {
   preferred_language: LanguageCode;
 }
 
+/**
+ * Creates campaigns and resolves their audience. Actual sending is handled by
+ * CampaignSchedulerService (a cron job) — see that file for why: a campaign
+ * with hundreds of contacts must not fire a burst of requests at WGL, it must
+ * trickle out over multiple days at a configurable daily limit + interval,
+ * and survive a server restart mid-send.
+ */
 @Injectable()
 export class CampaignsService {
-  private readonly logger = new Logger(CampaignsService.name);
-
   constructor(
     private readonly supabase: SupabaseService,
     private readonly templates: TemplatesService,
-    private readonly wa: WhatsappService,
   ) {}
 
   /** Resolve the patient audience for a campaign (spec §21). */
@@ -94,6 +95,9 @@ export class CampaignsService {
         message: dto.message,
         audience_type: dto.audience_type,
         segment_filters: dto.audience_type === 'segment' ? (dto.segment_filters ?? {}) : null,
+        image_url: dto.image_url ?? null,
+        daily_limit: dto.daily_limit ?? null,
+        send_interval_seconds: dto.send_interval_seconds ?? null,
         status: 'draft',
         total_recipients: recipients.length,
         created_by: userId,
@@ -117,8 +121,13 @@ export class CampaignsService {
     return data;
   }
 
-  /** Build recipients + start the background send (spec §24). */
-  async send(campaignId: string, userId: string | null) {
+  /**
+   * Materializes recipients (first send only — a re-send resumes pending
+   * ones) and marks the campaign 'sending'. Actual message delivery is
+   * entirely owned by CampaignSchedulerService's cron tick from this point
+   * on, respecting the configured daily limit and interval.
+   */
+  async send(campaignId: string, _userId: string | null) {
     const db = this.supabase.getClient();
     const { data: campaign, error } = await db
       .from('campaigns')
@@ -131,135 +140,68 @@ export class CampaignsService {
     }
 
     const audienceType = campaign.audience_type as AudienceType;
+    let total: number;
 
-    // CSV campaigns already have their recipients materialized at creation time.
     if (audienceType === 'csv') {
+      // CSV campaigns already have their recipients materialized at creation time.
       const { count } = await db
         .from('campaign_recipients')
         .select('id', { count: 'exact', head: true })
         .eq('campaign_id', campaignId);
       if (!count) throw new BadRequestException('Audience is empty');
-
-      await db
-        .from('campaigns')
-        .update({ status: 'sending', total_recipients: count })
-        .eq('id', campaignId);
-
-      void this.processCampaign(campaignId, userId).catch((e) =>
-        this.logger.error(`Campaign ${campaignId} processing failed: ${e}`),
+      total = count;
+    } else {
+      const audience = await this.resolveAudience(
+        audienceType,
+        audienceType === 'segment' ? ((campaign.segment_filters as SegmentFilters) ?? undefined) : undefined,
       );
+      if (audience.length === 0) throw new BadRequestException('Audience is empty');
 
-      return { status: 'sending', total: count };
+      // Build recipients only on the first send; a re-send resumes pending
+      // ones (duplicate protection). Plain insert — the partial unique index
+      // cannot act as an ON CONFLICT arbiter.
+      const { count: existing } = await db
+        .from('campaign_recipients')
+        .select('id', { count: 'exact', head: true })
+        .eq('campaign_id', campaignId);
+
+      if (!existing) {
+        const recipients = audience.map((p) => ({
+          campaign_id: campaignId,
+          patient_id: p.id,
+          name: p.full_name,
+          phone: p.phone,
+          status: 'pending' as const,
+        }));
+        const { error: insErr } = await db.from('campaign_recipients').insert(recipients);
+        if (insErr) throw new Error(insErr.message);
+      }
+
+      const { count } = await db
+        .from('campaign_recipients')
+        .select('id', { count: 'exact', head: true })
+        .eq('campaign_id', campaignId);
+      total = count ?? audience.length;
     }
 
-    const audience = await this.resolveAudience(
-      audienceType,
-      audienceType === 'segment' ? ((campaign.segment_filters as SegmentFilters) ?? undefined) : undefined,
-    );
-    if (audience.length === 0) throw new BadRequestException('Audience is empty');
-
-    // Build recipients only on the first send; a re-send resumes pending ones
-    // (duplicate protection). Plain insert — the partial unique index cannot
-    // act as an ON CONFLICT arbiter.
-    const { count: existing } = await db
-      .from('campaign_recipients')
-      .select('id', { count: 'exact', head: true })
-      .eq('campaign_id', campaignId);
-
-    if (!existing) {
-      const recipients = audience.map((p) => ({
-        campaign_id: campaignId,
-        patient_id: p.id,
-        name: p.full_name,
-        phone: p.phone,
-        status: 'pending' as const,
-      }));
-      const { error: insErr } = await db.from('campaign_recipients').insert(recipients);
-      if (insErr) throw new Error(insErr.message);
-    }
-
-    const { count } = await db
-      .from('campaign_recipients')
-      .select('id', { count: 'exact', head: true })
-      .eq('campaign_id', campaignId);
-
-    await db
-      .from('campaigns')
-      .update({ status: 'sending', total_recipients: count ?? audience.length })
-      .eq('id', campaignId);
-
-    // Fire-and-forget background processing.
-    void this.processCampaign(campaignId, userId).catch((e) =>
-      this.logger.error(`Campaign ${campaignId} processing failed: ${e}`),
-    );
-
-    return { status: 'sending', total: count ?? audience.length };
-  }
-
-  private async processCampaign(campaignId: string, userId: string | null): Promise<void> {
-    const db = this.supabase.getClient();
-    const { data: campaign } = await db.from('campaigns').select('*').eq('id', campaignId).single();
-    if (!campaign) return;
     const settings = await this.templates.getSettings();
 
-    const { data: pending } = await db
-      .from('campaign_recipients')
-      .select('id, patient_id, name, phone')
-      .eq('campaign_id', campaignId)
-      .eq('status', 'pending');
-
-    let sent = 0;
-    let failed = 0;
-
-    for (const r of pending ?? []) {
-      const body = this.fillMessage(campaign.message as string, {
-        patient_name: (r.name as string) ?? '',
-        offer: (campaign.offer as string) ?? '',
-        clinic_name: settings.clinic_name,
-      });
-
-      let result = await this.wa.sendText(r.phone as string, body);
-      if (!result.ok) result = await this.wa.sendText(r.phone as string, body); // one retry
-
-      // Log to the message history.
-      await db.from('whatsapp_messages').insert({
-        patient_id: r.patient_id,
-        campaign_id: campaignId,
-        phone: r.phone,
-        direction: 'outbound',
-        message_type: 'campaign',
-        body,
-        status: result.ok ? 'sent' : 'failed',
-        provider_message_id: result.providerMessageId,
-        error_message: result.error,
-        created_by: userId,
-      });
-
-      await db
-        .from('campaign_recipients')
-        .update({
-          status: result.ok ? 'sent' : 'failed',
-          provider_message_id: result.providerMessageId,
-          error_message: result.error,
-          sent_at: result.ok ? new Date().toISOString() : null,
-        })
-        .eq('id', r.id);
-
-      if (result.ok) sent += 1;
-      else failed += 1;
-
-      await db.from('campaigns').update({ sent_count: sent, failed_count: failed }).eq('id', campaignId);
-      await sleep(SEND_DELAY_MS);
-    }
-
     await db
       .from('campaigns')
-      .update({ status: sent === 0 && failed > 0 ? 'failed' : 'completed' })
+      .update({
+        status: 'sending',
+        total_recipients: total,
+        sent_today: 0,
+        sent_today_date: null,
+        next_send_at: new Date().toISOString(), // eligible to send immediately on the next scheduler tick
+      })
       .eq('id', campaignId);
-    this.logger.log(`Campaign ${campaignId} done: sent=${sent} failed=${failed}`);
-  }
 
-  private fillMessage(template: string, vars: Record<string, string>): string {
-    return template.replace(/\{\{\s*(\w+)\s*\}\}/g, (_m, k: string) => vars[k] ?? '');
+    return {
+      status: 'sending',
+      total,
+      daily_limit: campaign.daily_limit ?? settings.campaign_daily_limit,
+      send_interval_seconds: campaign.send_interval_seconds ?? settings.campaign_send_interval_seconds,
+    };
   }
 }

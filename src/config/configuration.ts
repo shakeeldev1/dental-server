@@ -20,6 +20,13 @@ export default () => ({
     webhookSecret: process.env.WHATSAPP_WEBHOOK_SECRET ?? '',
   },
 
+  cloudinary: {
+    cloudName: process.env.CLOUDINARY_CLOUD_NAME ?? '',
+    apiKey: process.env.CLOUDINARY_API_KEY ?? '',
+    apiSecret: process.env.CLOUDINARY_API_SECRET ?? '',
+    folder: process.env.CLOUDINARY_UPLOAD_FOLDER ?? '',
+  },
+
   clinic: {
     name: process.env.CLINIC_NAME ?? 'Expert Dental Center',
     googleReviewUrl: process.env.GOOGLE_REVIEW_URL ?? '',
