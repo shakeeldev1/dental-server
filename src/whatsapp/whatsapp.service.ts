@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
+const PROVIDER_REQUEST_TIMEOUT_MS = 30_000;
+
 export interface ProviderResult {
   ok: boolean;
   providerMessageId: string | null;
@@ -77,12 +79,15 @@ export class WhatsappService {
 
     const url = `${apiUrl.replace(/\/$/, '')}${path}`;
     const body = { api_key: apiKey, sender, ...payload };
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), PROVIDER_REQUEST_TIMEOUT_MS);
 
     try {
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        signal: controller.signal,
       });
       const text = await res.text();
       let json: Record<string, unknown>;
@@ -102,9 +107,15 @@ export class WhatsappService {
         raw: json,
       };
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Network error';
+      const message = err instanceof Error && err.name === 'AbortError'
+        ? `WhatsApp provider timed out after ${PROVIDER_REQUEST_TIMEOUT_MS / 1000} seconds`
+        : err instanceof Error
+          ? err.message
+          : 'Network error';
       this.logger.error(`WhatsApp POST ${path} failed: ${message}`);
       return { ok: false, providerMessageId: null, error: message, raw: null };
+    } finally {
+      clearTimeout(timeout);
     }
   }
 }

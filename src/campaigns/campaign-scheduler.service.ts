@@ -54,7 +54,7 @@ export class CampaignSchedulerService {
     private readonly wa: WhatsappService,
   ) {}
 
-  @Cron('*/10 * * * * *')
+  @Cron('* * * * * *')
   async tick(): Promise<void> {
     if (!this.wa.isConfigured || this.running) return;
     this.running = true;
