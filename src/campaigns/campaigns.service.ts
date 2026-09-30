@@ -204,4 +204,42 @@ export class CampaignsService {
       send_interval_seconds: campaign.send_interval_seconds ?? settings.campaign_send_interval_seconds,
     };
   }
+
+  async cancel(campaignId: string) {
+    const db = this.supabase.getClient();
+    const { data: campaign, error } = await db
+      .from('campaigns')
+      .select('id, status')
+      .eq('id', campaignId)
+      .single();
+    if (error || !campaign) throw new NotFoundException('Campaign not found');
+    if (campaign.status !== 'sending') {
+      throw new BadRequestException('Only a sending campaign can be cancelled');
+    }
+
+    const { error: updateError } = await db
+      .from('campaigns')
+      .update({ status: 'cancelled', next_send_at: null })
+      .eq('id', campaignId)
+      .eq('status', 'sending');
+    if (updateError) throw new Error(updateError.message);
+    return { id: campaignId, status: 'cancelled' };
+  }
+
+  async remove(campaignId: string) {
+    const db = this.supabase.getClient();
+    const { data: campaign, error } = await db
+      .from('campaigns')
+      .select('id, status')
+      .eq('id', campaignId)
+      .single();
+    if (error || !campaign) throw new NotFoundException('Campaign not found');
+    if (campaign.status === 'sending') {
+      throw new BadRequestException('Cancel the campaign before deleting it');
+    }
+
+    const { error: deleteError } = await db.from('campaigns').delete().eq('id', campaignId);
+    if (deleteError) throw new Error(deleteError.message);
+    return { id: campaignId };
+  }
 }

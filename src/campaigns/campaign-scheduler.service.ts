@@ -131,6 +131,7 @@ export class CampaignSchedulerService {
       clinic_name: settings.clinic_name,
     });
 
+    const sendStartedAt = Date.now();
     const outcome = await this.messages.send({
       phone: r.phone,
       patientId: r.patient_id,
@@ -157,7 +158,8 @@ export class CampaignSchedulerService {
         failed_count: campaign.failed_count + (outcome.ok ? 0 : 1),
         sent_today: sentToday + 1,
         sent_today_date: today,
-        next_send_at: new Date(now.getTime() + intervalSeconds * 1000).toISOString(),
+        // Keep the configured gap between provider send starts.
+        next_send_at: new Date(sendStartedAt + intervalSeconds * 1000).toISOString(),
       })
       .eq('id', campaign.id);
   }

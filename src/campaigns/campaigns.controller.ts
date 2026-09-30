@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseUUIDPipe,
@@ -72,5 +73,17 @@ export class CampaignsController {
   @Post(':id/send')
   send(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser) {
     return this.campaigns.send(id, user.id);
+  }
+
+  /** Stop future sends while preserving campaign history. */
+  @Post(':id/cancel')
+  cancel(@Param('id', ParseUUIDPipe) id: string) {
+    return this.campaigns.cancel(id);
+  }
+
+  /** Permanently delete a campaign and its recipient rows. */
+  @Delete(':id')
+  remove(@Param('id', ParseUUIDPipe) id: string) {
+    return this.campaigns.remove(id);
   }
 }
