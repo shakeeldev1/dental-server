@@ -1,0 +1,5 @@
+[build.environment]
+  # These variables hold non-sensitive configuration (clinic display name,
+  # runtime mode, port and the public WhatsApp API base URL) that intentionally
+  # appear as defaults in source and .env.example. Real credentials remain scanned.
+  SECRETS_SCAN_OMIT_KEYS = "CLINIC_NAME,NODE_ENV,PORT,WHATSAPP_API_URL"
